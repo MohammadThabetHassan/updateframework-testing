@@ -1,39 +1,41 @@
-# This workflow will install Python dependencies, run tests and lint with a single version of Python
-# For more information see: https://docs.github.com/en/actions/automating-builds-and-tests/building-and-testing-python
+steps:
+- uses: actions/checkout@v4
 
-name: Python application
+- name: Set up Python 3.10
+  uses: actions/setup-python@v4
+  with:
+    python-version: "3.10"
 
-on:
-  push:
-    branches: [ "develop" ]
-  pull_request:
-    branches: [ "develop" ]
+- name: Cache pip
+  uses: actions/cache@v4
+  with:
+    path: ~/.cache/pip
+    key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+    restore-keys: |
+      ${{ runner.os }}-pip-
 
-permissions:
-  contents: read
+- name: Install system build deps (for cryptography, if needed)
+  if: runner.os == 'Linux'
+  run: |
+    sudo apt-get update
+    sudo apt-get install -y build-essential libssl-dev libffi-dev python3-dev || true
 
-jobs:
-  build:
+- name: Install dependencies
+  run: |
+    python -m pip install --upgrade pip
+    pip install wheel
+    # Prefer requirements.txt when present; otherwise install required packages
+    if [ -f requirements.txt ]; then
+      pip install -r requirements.txt
+    else
+      pip install flake8 pytest securesystemslib urllib3 cryptography freezegun
+    fi
 
-    runs-on: ubuntu-latest
+- name: Lint with flake8
+  run: |
+    flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+    flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
 
-    steps:
-    - uses: actions/checkout@v4
-    - name: Set up Python 3.10
-      uses: actions/setup-python@v3
-      with:
-        python-version: "3.10"
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install flake8 pytest
-        if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-    - name: Lint with flake8
-      run: |
-        # stop the build if there are Python syntax errors or undefined names
-        flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
-        # exit-zero treats all errors as warnings. The GitHub editor is 127 chars wide
-        flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
-    - name: Test with pytest
-      run: |
-        pytest
+- name: Test with pytest
+  run: |
+    pytest
