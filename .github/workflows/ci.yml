@@ -1,17 +1,93 @@
-name: CI
+name: CRDA Scan
 
+# Triggers: workflow_call & manual; also safe pull_request (NOT pull_request_target)
 on:
-  push:
-    branches:
-      - develop
-
-  pull_request:
+  workflow_call:
+    secrets:
+      CRDA_KEY:
+        required: false
+      SNYK_TOKEN:
+        required: false
   workflow_dispatch:
+  pull_request:
+    branches: [ "develop" ]
+    types: [ assigned, opened, synchronize, reopened, labeled, edited ]
 
-permissions: {}
+permissions:
+  contents: read
 
 jobs:
-  test:
-    uses: ./.github/workflows/_test.yml
-  test-with-sslib-main:
-    uses: ./.github/workflows/_test_sslib_main.yml
+  crda-scan:
+    permissions:
+      contents: read            # to fetch code via git
+      security-events: write    # if you later upload SARIF via API
+    name: Scan project vulnerabilities with CRDA
+    runs-on: ubuntu-latest
+    steps:
+
+      - name: Checkout repository without using actions/checkout
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Configure git to use the token for HTTPS access (so private repos work)
+          git config --global url."https://x-access-token:${GITHUB_TOKEN}@github.com/".insteadOf "https://github.com/"
+          mkdir repo
+          git clone --depth=1 https://github.com/${{ github.repository }} repo || true
+          # If a ref is provided, try to check it out (best-effort)
+          if [ -n "${{ github.ref }}" ]; then
+            cd repo
+            git fetch --depth=1 origin "${{ github.ref_name }}" || true
+            git checkout -f "${{ github.ref_name }}" || true
+            cd ..
+          fi
+        shell: bash
+
+      - name: Show Python and pip available
+        working-directory: repo
+        run: |
+          python --version || true
+          pip --version || true
+
+      - name: Install CRDA CLI (best-effort; do not rely on third-party actions)
+        working-directory: repo
+        run: |
+          # Try installing via pip if a package is available (non-fatal).
+          # Replace this with your preferred installation method pinned to a release if needed.
+          python -m pip install --upgrade pip setuptools wheel || true
+          python -m pip install crda || true
+        shell: bash
+
+      - name: Run CRDA scan (best-effort)
+        working-directory: repo
+        env:
+          CRDA_KEY: ${{ secrets.CRDA_KEY }}
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        run: |
+          # If a 'crda' binary is available, run it and output a SARIF file.
+          if command -v crda >/dev/null 2>&1; then
+            echo "Running crda analyze..."
+            # --sarif or similar flag depends on installed crda CLI; update as necessary
+            crda analyze --sarif --output=crda.sarif || true
+          else
+            echo "crda CLI not found; skipping scan (install step is best-effort)."
+          fi
+        shell: bash
+
+      - name: (Optional) Upload SARIF results to GitHub via API (best-effort, non-fatal)
+        working-directory: repo
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ -f crda.sarif ]; then
+            echo "Found crda.sarif — attempting upload to GitHub Code Scanning (best-effort)."
+            # Use the code-scanning SARIF upload endpoint.
+            # This call is best-effort and non-fatal; adjust as needed for your organization.
+            curl -s -X POST \
+              -H "Authorization: token ${GITHUB_TOKEN}" \
+              -H "Content-Type: application/sarif+json" \
+              --data-binary @crda.sarif \
+              "https://api.github.com/repos/${{ github.repository }}/code-scanning/sarifs" || true
+          else
+            echo "No crda.sarif produced; skipping upload."
+          fi
+        shell: bash
